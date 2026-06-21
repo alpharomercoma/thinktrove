@@ -91,12 +91,16 @@ export async function deletePrefix(prefix: string): Promise<void> {
   for (const k of all) if (k === p || k.startsWith(p + '/')) await del(k, store);
 }
 
-/** Snapshot of all text documents — sent to the chat route so the agent's tools
- *  can search/read them server-side without a cloud store. */
+/** Snapshot of the user's documents — sent to the chat route so the agent's tools
+ *  can search/read them server-side without a cloud store. Every stored doc is
+ *  text (the editor only writes strings; there is no binary upload path), so we
+ *  include them ALL regardless of extension — excluding only `.keep` folder
+ *  markers. Gating this on a text-extension allow-list previously hid legitimate
+ *  user files (e.g. an extensionless `speakerships/web-scrape`) from the agent. */
 export async function snapshotForChat(): Promise<{ path: string; content: string }[]> {
   const all = (await entries(store)) as [string, Stored][];
   return all
-    .filter(([path]) => isTextDoc(path) && path.split('/').pop() !== '.keep')
+    .filter(([path]) => path.split('/').pop() !== '.keep')
     .map(([path, v]) => ({ path, content: v?.content ?? '' }));
 }
 

@@ -18,8 +18,6 @@ export type ToolContext = {
   docs: DocSnapshot[];
 };
 
-const TEXT_EXT = /\.(md|markdown|txt|json|csv|yaml|yml|html?|rtf)$/i;
-
 function normalizePath(path: string): string {
   return path
     .replace(/^\/+/, '')
@@ -45,7 +43,8 @@ export function buildTools(ctx: ToolContext) {
       const terms = tokenize(query);
       const scored: { path: string; score: number; snippets: string[] }[] = [];
       for (const d of ctx.docs) {
-        if (!TEXT_EXT.test(d.path)) continue;
+        // Every doc in the snapshot is searchable text; the client already excludes
+        // `.keep` folder markers. (No extension allow-list — that hid real files.)
         const { score, snippets } = scoreDocument(d.content, terms, query);
         if (score > 0) scored.push({ path: d.path, score, snippets });
       }
