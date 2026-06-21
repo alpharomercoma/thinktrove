@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { DocEntry } from '@/lib/docs-local';
 
 type Props = {
@@ -47,6 +47,10 @@ function buildTree(files: DocEntry[]): TreeNode {
 const parentOf = (p: string) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
 const baseOf = (p: string) => p.split('/').pop() || p;
 
+/** What's being created, and the folder it lives in ('' = root) — VS-Code-style
+ *  inline entry: the box appears at `dir`'s location and you type just the name. */
+type Creating = { kind: 'file' | 'folder'; dir: string };
+
 export default function FileTree({
   files,
   openPath,
@@ -58,17 +62,29 @@ export default function FileTree({
   onDeleteFolder,
   onRefresh,
 }: Props) {
-  const [creating, setCreating] = useState<null | 'file' | 'folder'>(null);
+  const [creating, setCreating] = useState<Creating | null>(null);
   const [draft, setDraft] = useState('');
   const [editing, setEditing] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const committing = useRef(false); // guard the commit-on-blur + commit-on-Enter double fire
 
   // drag & drop
   const [drag, setDrag] = useState<{ path: string; kind: 'file' | 'folder' } | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null); // folder path, or '' for root
 
   const tree = useMemo(() => buildTree(files), [files]);
+
+  // "Where I currently am": the folder containing the open document (root if none).
+  const currentDir = openPath ? parentOf(openPath) : '';
+
+  const expand = (dir: string) =>
+    setCollapsed((prev) => {
+      if (!dir || !prev.has(dir)) return prev;
+      const next = new Set(prev);
+      next.delete(dir);
+      return next;
+    });
 
   const toggle = (path: string) =>
     setCollapsed((prev) => {
@@ -77,16 +93,29 @@ export default function FileTree({
       return next;
     });
 
-  function startCreate(kind: 'file' | 'folder', prefix = '') {
-    setCreating(kind);
-    setDraft(prefix);
+  function startCreate(kind: 'file' | 'folder', dir = '') {
+    setCreating({ kind, dir });
+    setDraft('');
     setEditing(null);
+    expand(dir); // make the inline box visible inside its folder
   }
-  function commitCreate() {
-    const v = draft.trim();
-    if (v) (creating === 'folder' ? onNewFolder : onCreate)(v);
+  function cancelCreate() {
     setDraft('');
     setCreating(null);
+  }
+  function commitCreate() {
+    if (committing.current) return;
+    const c = creating;
+    const name = draft.trim();
+    if (!c) return;
+    committing.current = true;
+    setDraft('');
+    setCreating(null);
+    if (name) {
+      const path = c.dir ? `${c.dir}/${name}` : name;
+      (c.kind === 'folder' ? onNewFolder : onCreate)(path);
+    }
+    setTimeout(() => (committing.current = false), 0);
   }
   function startRename(node: TreeNode) {
     setEditing(node.path);
@@ -119,6 +148,32 @@ export default function FileTree({
     onRename(drag.path, to, drag.kind);
     resetDrag();
   }
+
+  // The inline "new file / new folder" row, rendered at its folder's depth.
+  const createRow = (depth: number) => (
+    <div
+      key="__create"
+      className="row create"
+      style={{ paddingLeft: 10 + depth * 14 }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {creating?.kind === 'folder' ? <span className="twirl">▾</span> : <span className="dot" />}
+      <input
+        autoFocus
+        className="rename-input"
+        placeholder={creating?.kind === 'folder' ? 'folder name' : 'file name'}
+        value={draft}
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commitCreate}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === 'Enter') commitCreate();
+          if (e.key === 'Escape') cancelCreate();
+        }}
+      />
+    </div>
+  );
 
   let i = 0;
   const renderNode = (node: TreeNode, depth: number): React.ReactNode =>
@@ -181,8 +236,11 @@ export default function FileTree({
               <span className="twirl">▾</span>
               {isEditing ? renameField : <span className="name">{child.name}</span>}
               <span className="actions">
-                <button className="act" title="New file in folder" onClick={(e) => { e.stopPropagation(); startCreate('file', child.path + '/'); }}>
+                <button className="act" title="New file in folder" onClick={(e) => { e.stopPropagation(); startCreate('file', child.path); }}>
                   +
+                </button>
+                <button className="act" title="New folder in folder" onClick={(e) => { e.stopPropagation(); startCreate('folder', child.path); }}>
+                  ⊞
                 </button>
                 <button className="act" title="Rename folder" onClick={(e) => { e.stopPropagation(); startRename(child); }}>
                   ✎
@@ -192,7 +250,12 @@ export default function FileTree({
                 </button>
               </span>
             </div>
-            {!isCollapsed && renderNode(child, depth + 1)}
+            {!isCollapsed && (
+              <>
+                {creating?.dir === child.path && createRow(depth + 1)}
+                {renderNode(child, depth + 1)}
+              </>
+            )}
           </div>
         );
       }
@@ -232,10 +295,10 @@ export default function FileTree({
       <div className="index-bar">
         <span className="label">Files</span>
         <div className="index-actions">
-          <button className="ghost-btn" title="New file" onClick={() => startCreate('file')}>
+          <button className="ghost-btn" title="New file" onClick={() => startCreate('file', currentDir)}>
             +
           </button>
-          <button className="ghost-btn" title="New folder" onClick={() => startCreate('folder')}>
+          <button className="ghost-btn" title="New folder" onClick={() => startCreate('folder', currentDir)}>
             ⊞
           </button>
           <button className="ghost-btn" title="Refresh" onClick={onRefresh}>
@@ -257,23 +320,7 @@ export default function FileTree({
           performMove('');
         }}
       >
-        {creating && (
-          <input
-            autoFocus
-            className="new-input"
-            placeholder={creating === 'folder' ? 'folder-name' : 'folder/title.md'}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={commitCreate}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') commitCreate();
-              if (e.key === 'Escape') {
-                setDraft('');
-                setCreating(null);
-              }
-            }}
-          />
-        )}
+        {creating?.dir === '' && createRow(0)}
 
         {files.length === 0 && !creating ? (
           <div className="tree-empty">
